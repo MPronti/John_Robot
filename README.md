@@ -9,7 +9,7 @@ google-generativeai
 ```
 
 ## Setup
-Create a `.env` file in your root directory with:
+Create a `.env` file in your directory with:
 ```
 DISCORD_TOKEN=your_discord_bot_token
 GOOGLE_API_KEY=your_google_api_key
