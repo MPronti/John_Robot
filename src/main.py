@@ -115,8 +115,8 @@ async def usage_command(interaction: discord.Interaction):
     """Slash command to display the daily Gemini API call count"""
     check_and_reset_counter() # Ensure counter is up-to-date
     response_text = (
-        f"*This bot instance has made {api_calls_today}/50 calls to the Gemini API today ({last_reset_date.isoformat()})*\n"
-        f"*Keep in mind, there is a 2 call per minute limit as well*\n"
+        f"*This bot has made {api_calls_today}/25 calls to the Gemini API today ({last_reset_date.isoformat()})*\n"
+        f"*Keep in mind, there is a 5 call per minute limit as well*\n"
     )
     # Send the usage info privately to the invoking user
     await interaction.response.send_message(response_text)
