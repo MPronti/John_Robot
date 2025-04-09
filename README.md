@@ -25,5 +25,5 @@ John Robot automatically creates and updates a local `api_usage.json` file to tr
 | `/usage`       | Show today’s Gemini API usage count        |
 
 ## Notes
-- Gemini 2.5 Pro is limited to **50 requests/day** and **2 requests/minute**, as of today, to free users
+- Gemini 2.5 Pro is limited to **25 requests/day** and **5 requests/minute**, as of today, to free users
 - Long answers are split into multiple Discord messages automatically
