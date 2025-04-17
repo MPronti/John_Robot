@@ -29,3 +29,5 @@ John Robot automatically creates and updates a local `api_usage.json` file to tr
 ## Notes
 - Gemini 2.5 Pro is limited to **25 requests/day** and **5 requests/minute**, as of today, to free users
 - Long answers are split into multiple Discord messages automatically
+- John Robot now supports context for each prompt wherein you can specify contextual text (i.e. from a different message)
+- John Robot now supports replies to its original response, allowing for longer conversations
