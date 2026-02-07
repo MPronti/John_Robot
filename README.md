@@ -9,6 +9,7 @@ discord.py
 python-dotenv
 google-generativeai (soon to be defunct - use google.genai instead)
 aiofiles
+python-dotenv
 ```
 
 ## Setup
