@@ -1,14 +1,14 @@
 import discord
 from discord import app_commands
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 import datetime
 import json
 import asyncio
 from typing import Optional, Tuple
 import traceback
-from google.api_core import exceptions as google_exceptions
 import aiofiles
 
 # --- Configuration & Environment Variables ---
@@ -21,7 +21,7 @@ MODELS = {
     "2.5 Flash": "gemini-2.5-flash", 
     "2.5 Pro":   "gemini-2.5-pro",
     "3.0 Flash": "gemini-3-flash-preview"
-    # "3.0 Pro":   "gemini-3-pro-preview"
+    #"3.0 Pro":   "gemini-3-pro-preview"
 }
 DEFAULT_MODEL = "3.0 Flash"
 DATA_FILE = "data.json"
@@ -41,7 +41,10 @@ except (FileNotFoundError, json.JSONDecodeError) as e:
     print(f"Warning: Could not load '{DATA_FILE}': {e}. Personalities will be unavailable.")
 
 EMBED_DESC_LIMIT = 4096
-MAX_PROMPT_LENGTH_IN_TITLE = 250
+# The limit is 256 for the title. 
+# Prompt logic was: "Prompt: " (8 chars) + 250 chars = 258 chars (Bug).
+# Adjusted to ensure total title length is safe.
+MAX_PROMPT_LENGTH_IN_TITLE = 200 
 
 if not DISCORD_TOKEN: exit("Error: DISCORD_TOKEN environment variable not set.")
 if not GOOGLE_API_KEY: exit("Error: GOOGLE_API_KEY environment variable not set.")
@@ -66,7 +69,12 @@ class APITracker:
                     full_data = json.loads(content)
                 
                 usage_data = full_data.get("usage", {})
-                saved_date = datetime.date.fromisoformat(usage_data.get("date", "1970-01-01"))
+                # Handle potential malformed date string safely
+                try:
+                    saved_date = datetime.date.fromisoformat(usage_data.get("date", "1970-01-01"))
+                except ValueError:
+                    saved_date = datetime.date(1970, 1, 1)
+
                 today = datetime.date.today()
 
                 if saved_date == today:
@@ -88,14 +96,15 @@ class APITracker:
             """Reads current file, updates ONLY usage, and saves back."""
             try:
                 # 1. Read current state of file (to preserve external edits to prompts)
+                current_data = {}
                 if os.path.exists(self.file_path):
                     async with aiofiles.open(self.file_path, 'r') as f:
                         try:
-                            current_data = json.loads(await f.read())
+                            content = await f.read()
+                            if content.strip():
+                                current_data = json.loads(content)
                         except json.JSONDecodeError:
-                            current_data = {}
-                else:
-                    current_data = {}
+                            pass # Start fresh if corrupt
 
                 # 2. Update only the usage section
                 current_data["usage"] = {
@@ -136,8 +145,9 @@ api_tracker = APITracker(DATA_FILE, SYSTEM_PROMPTS)
 
 # --- Google Gemini API Initialization ---
 try:
-    genai.configure(api_key=GOOGLE_API_KEY)
-    print("Successfully configured Google Gemini API key.")
+    # Initialize the new Google GenAI Client
+    client_genai = genai.Client(api_key=GOOGLE_API_KEY)
+    print("Successfully initialized Google GenAI Client.")
 except Exception as e:
     print(f"Error configuring Google Gemini: {e}")
     exit()
@@ -168,37 +178,49 @@ async def process_gemini_request(interaction: discord.Interaction, prompt: str, 
     if context: final_prompt = f"Previous Context Provided by User:\n{context}\n\nUser Question: {prompt}"
     else: final_prompt = prompt
     print(f"\nProcessing prompt for {interaction.user.name} using model '{model_name}': '{final_prompt[:100]}...'")
-    try: model = genai.GenerativeModel(model_name, system_instruction=system_prompt)
-    except Exception as e:
-        print(f"Error instantiating model '{model_name}': {e}")
-        await interaction.followup.send(embed=create_error_embed(f"Could not create an instance of the model `{model_name}`. It might be an invalid name."), ephemeral=True)
-        return None
+    
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt
+    )
 
     try:
-        response = await model.generate_content_async(final_prompt)
-        if hasattr(response, 'prompt_feedback') and response.prompt_feedback.block_reason:
-            block_reason = f" Reason: {response.prompt_feedback.block_reason.name}"
-            await interaction.followup.send(embed=create_error_embed(f"Your prompt was blocked by safety filters.{block_reason}"), ephemeral=True)
-            return None
+        # Use the asynchronous method from the new client
+        response = await client_genai.aio.models.generate_content(
+            model=model_name,
+            contents=final_prompt,
+            config=config
+        )
         
+        # Check for empty candidates or block reasons
         if not response.candidates:
             await interaction.followup.send(embed=create_error_embed("The model returned no response."), ephemeral=True)
             return None
+        
+        # New SDK finish reason check (basic implementation)
+        # If the model is blocked, text access might fail or finish_reason will be SAFETY
         try:
             answer = response.text
-        except ValueError:
-            # This catches cases where safety filters block text access despite settings
-            print(f"Response blocked. Feedback: {response.prompt_feedback}")
+        except (ValueError, AttributeError):
+            # This catches cases where safety filters block text access
+            print(f"Response blocked. Finish Reason: {response.candidates[0].finish_reason if response.candidates else 'Unknown'}")
             await interaction.followup.send(embed=create_error_embed("The model refused to answer (Safety/Invalid response)."), ephemeral=True)
             return None
             
         print(f"Gemini Response (length {len(answer)}): '{answer[:100]}...'")
-        truncated_prompt = f"Prompt: {prompt[:MAX_PROMPT_LENGTH_IN_TITLE-10]}..." if len(prompt) > MAX_PROMPT_LENGTH_IN_TITLE else f"Prompt: {prompt}"
+        
+        # Safe title truncation ensuring < 256 chars
+        title_text = f"Prompt: {prompt}"
+        if len(title_text) > 256:
+            truncated_prompt = title_text[:253] + "..."
+        else:
+            truncated_prompt = title_text
+
         await api_tracker.increment()
         current_api_count = api_tracker.get_count()
         embed_color = discord.Color.blue()
         sent_messages = []
         model_display_name = next((name for name, value in MODELS.items() if value == model_name), model_name)
+        
         if len(answer) <= EMBED_DESC_LIMIT:
             embed = discord.Embed(title=truncated_prompt, description=answer, color=embed_color)
             embed.set_author(name=f"Responding as: {personality_name}")
@@ -219,16 +241,16 @@ async def process_gemini_request(interaction: discord.Interaction, prompt: str, 
                 sent_messages.append(msg)
                 await asyncio.sleep(0.2)
         return answer, sent_messages[-1] if sent_messages else None
-    except google_exceptions.InternalServerError as e:
-        print(f"Google API Internal Server Error: {e}")
-        traceback.print_exc()
-        await interaction.followup.send(embed=create_error_embed("The AI service encountered an internal error. Please try again."), ephemeral=True)
-        return None
+
     except Exception as e:
         print(f"An unexpected error occurred: {type(e).__name__} - {e}")
         traceback.print_exc()
-        try: await interaction.followup.send(embed=create_error_embed("Sorry, I encountered a critical unexpected error."), ephemeral=True)
-        except discord.errors.NotFound: await interaction.channel.send(f"{interaction.user.mention}", embed=create_error_embed("Sorry, I encountered a critical unexpected error."))
+        try: 
+            await interaction.followup.send(embed=create_error_embed("Sorry, I encountered a critical unexpected error."), ephemeral=True)
+        except discord.errors.NotFound: 
+            # If interaction is invalid (e.g. timed out), try sending to channel
+            if interaction.channel:
+                await interaction.channel.send(f"{interaction.user.mention}", embed=create_error_embed("Sorry, I encountered a critical unexpected error."))
         return None
 
 # --- UI Components for Follow-up ---
@@ -279,10 +301,12 @@ personality_choices = [app_commands.Choice(name=name, value=name) for name in SY
 @app_commands.choices(model=model_choices, personality=personality_choices)
 async def ask_gemini(interaction: discord.Interaction, prompt: str, personality: str = None, model: str = None, context: Optional[str] = None):
     await interaction.response.defer(thinking=True, ephemeral=False)
-    chosen_model_name = model if model else MODELS[DEFAULT_MODEL]
+    chosen_model_name = model if model else MODELS.get(DEFAULT_MODEL, "gemini-3-flash-preview") # Fallback safety
+    
     if not SYSTEM_PROMPTS:
-        await interaction.followup.send(embed=create_error_embed("Error: No personalities configured or loaded. Cannot process request."), ephemeral=True)
-        return
+         await interaction.followup.send(embed=create_error_embed("Error: No personalities configured or loaded. Cannot process request."), ephemeral=True)
+         return
+
     chosen_personality_name = personality if personality else DEFAULT_PERSONALITY
     chosen_system_prompt = SYSTEM_PROMPTS.get(chosen_personality_name)
     result = await process_gemini_request(interaction, prompt, model_name=chosen_model_name, system_prompt=chosen_system_prompt, personality_name=chosen_personality_name, context=context)
@@ -308,6 +332,6 @@ if __name__ == "__main__":
         print("Starting bot...")
         client.run(DISCORD_TOKEN)
     except discord.LoginFailure:
-        print("Error: Invalid Discord Token. Please check your .env file/environment variables.")
+        print("Error: Invalid Discord Token. Please check your .env file/environment variables")
     except Exception as e:
         print(f"An unexpected error occurred while running the bot: {e}")
