@@ -7,7 +7,7 @@ Programmed in conjunction with Gemini
 ```
 discord.py
 python-dotenv
-google-generativeai (soon to be defunct - use google.genai instead)
+google.genai
 aiofiles
 python-dotenv
 ```
