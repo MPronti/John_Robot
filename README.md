@@ -1,5 +1,5 @@
 # John_Robot
-A Discord bot, using the discord.py and Google Gemini APIs, with Google Gemini 3.0 integration!
+A Discord bot, using the discord.py and Google Gemini APIs, with Google Gemini 2.5 & 3 integration!
 
 Programmed in conjunction with Gemini
 
@@ -34,5 +34,5 @@ John Robot automatically tracks daily Gemini API usage with a data.json file
 - John Robot now supports replies to its original response, allowing for longer conversations.
 - John Robot now displays the current daily API usage counter in the footer of its embedded message, and there only. As such, the old '/usage' command has been removed.
 - See the current Gemini API usage documentation for current call rates, as they change frequently.
-- John Robot now supports multiple models of Gemini (Flash 3.0 Preview being the default).
+- John Robot now supports multiple models of Gemini (2.5 Flash being the default).
 - John Robot now supports multiple "personalities" (system prompts) - add these in data.json.
