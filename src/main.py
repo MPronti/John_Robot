@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 import os
+import sys
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -17,13 +18,15 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 TESTING_GUILD_ID = int(os.getenv('TESTING_GUILD_ID', 0))
 
-MODELS = { 
+MODELS = {
+    "2.5 Flash Lite" : "gemini-2.5-flash-lite",
     "2.5 Flash": "gemini-2.5-flash", 
     "2.5 Pro":   "gemini-2.5-pro",
-    "3.0 Flash": "gemini-3-flash-preview"
-    #"3.0 Pro":   "gemini-3-pro-preview"
+    "3 Flash": "gemini-3-flash-preview"
+    #"3.1 Flash Lite": "gemini-3.1-flash-lite-preview",
+    #"3.1 Pro":   "gemini-3.1-pro-preview"
 }
-DEFAULT_MODEL = "3.0 Flash"
+DEFAULT_MODEL = "2.5 Flash"
 DATA_FILE = "data.json"
 SYSTEM_PROMPTS = {}
 DEFAULT_PERSONALITY = "John Robot"
@@ -41,27 +44,22 @@ except (FileNotFoundError, json.JSONDecodeError) as e:
     print(f"Warning: Could not load '{DATA_FILE}': {e}. Personalities will be unavailable.")
 
 EMBED_DESC_LIMIT = 4096
-# The limit is 256 for the title. 
-# Prompt logic was: "Prompt: " (8 chars) + 250 chars = 258 chars (Bug).
-# Adjusted to ensure total title length is safe.
 MAX_PROMPT_LENGTH_IN_TITLE = 200 
 
-if not DISCORD_TOKEN: exit("Error: DISCORD_TOKEN environment variable not set.")
-if not GOOGLE_API_KEY: exit("Error: GOOGLE_API_KEY environment variable not set.")
+if not DISCORD_TOKEN: sys.exit("Error: DISCORD_TOKEN environment variable not set.")
+if not GOOGLE_API_KEY: sys.exit("Error: GOOGLE_API_KEY environment variable not set.")
 
-# --- Modified APITracker to be more robust ---
+# --- APITracker ---
 class APITracker:
     """A class to encapsulate API usage tracking from a consolidated JSON file."""
     def __init__(self, file_path: str, initial_prompts: dict):
         self.file_path = file_path
         self._count = 0
         self._date = datetime.date.today()
-        # Store the prompts loaded at startup to avoid re-reading the file during save
         self.system_prompts = initial_prompts
         self.lock = asyncio.Lock()
 
     async def load(self):
-        """Asynchronously loads usage data, resetting if the date has changed."""
         async with self.lock:
             try:
                 async with aiofiles.open(self.file_path, 'r') as f:
@@ -69,7 +67,6 @@ class APITracker:
                     full_data = json.loads(content)
                 
                 usage_data = full_data.get("usage", {})
-                # Handle potential malformed date string safely
                 try:
                     saved_date = datetime.date.fromisoformat(usage_data.get("date", "1970-01-01"))
                 except ValueError:
@@ -93,42 +90,37 @@ class APITracker:
                 await self._save_under_lock()
 
     async def _save_under_lock(self):
-            """Reads current file, updates ONLY usage, and saves back."""
-            try:
-                # 1. Read current state of file (to preserve external edits to prompts)
-                current_data = {}
-                if os.path.exists(self.file_path):
-                    async with aiofiles.open(self.file_path, 'r') as f:
-                        try:
-                            content = await f.read()
-                            if content.strip():
-                                current_data = json.loads(content)
-                        except json.JSONDecodeError:
-                            pass # Start fresh if corrupt
+        try:
+            current_data = {}
+            if os.path.exists(self.file_path):
+                async with aiofiles.open(self.file_path, 'r') as f:
+                    try:
+                        content = await f.read()
+                        if content.strip():
+                            current_data = json.loads(content)
+                    except json.JSONDecodeError:
+                        pass 
 
-                # 2. Update only the usage section
-                current_data["usage"] = {
-                    "date": self._date.isoformat(), 
-                    "count": self._count
-                }
-                
-                # 3. Ensure system_prompts key exists if file was empty, using memory version
-                if "system_prompts" not in current_data:
-                    current_data["system_prompts"] = self.system_prompts
+            current_data["usage"] = {
+                "date": self._date.isoformat(), 
+                "count": self._count
+            }
+            
+            if "system_prompts" not in current_data:
+                current_data["system_prompts"] = self.system_prompts
 
-                # 4. Write back
-                async with aiofiles.open(self.file_path, 'w') as f:
-                    await f.write(json.dumps(current_data, indent=2))
-            except IOError as e:
-                print(f"Error saving data to '{self.file_path}': {e}")
+            async with aiofiles.open(self.file_path, 'w') as f:
+                await f.write(json.dumps(current_data, indent=2))
+        except IOError as e:
+            print(f"Error saving data to '{self.file_path}': {e}")
 
     def get_count(self) -> int:
         if self._date < datetime.date.today():
             return 0
         return self._count
 
-    async def increment(self):
-        """Atomically increments the counter and saves the new state."""
+    async def increment(self) -> int:
+        """Atomically increments the counter and saves the new state, returning the current count."""
         async with self.lock:
             today = datetime.date.today()
             if self._date < today:
@@ -139,18 +131,17 @@ class APITracker:
             self._count += 1
             await self._save_under_lock()
             print(f"Gemini call successful. Count for today: {self._count}")
+            return self._count
 
-# --- Pass the loaded prompts to the tracker during initialization ---
 api_tracker = APITracker(DATA_FILE, SYSTEM_PROMPTS)
 
 # --- Google Gemini API Initialization ---
 try:
-    # Initialize the new Google GenAI Client
     client_genai = genai.Client(api_key=GOOGLE_API_KEY)
     print("Successfully initialized Google GenAI Client.")
 except Exception as e:
     print(f"Error configuring Google Gemini: {e}")
-    exit()
+    sys.exit()
 
 # --- Discord Bot Initialization ---
 class MyClient(discord.Client):
@@ -169,7 +160,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = MyClient(intents=intents)
 
-# --- Utility Function for Creating Embeds ---
 def create_error_embed(message: str) -> discord.Embed:
     return discord.Embed(description=message, color=discord.Color.red())
 
@@ -184,39 +174,32 @@ async def process_gemini_request(interaction: discord.Interaction, prompt: str, 
     )
 
     try:
-        # Use the asynchronous method from the new client
         response = await client_genai.aio.models.generate_content(
             model=model_name,
             contents=final_prompt,
             config=config
         )
         
-        # Check for empty candidates or block reasons
         if not response.candidates:
             await interaction.followup.send(embed=create_error_embed("The model returned no response."), ephemeral=True)
             return None
         
-        # New SDK finish reason check (basic implementation)
-        # If the model is blocked, text access might fail or finish_reason will be SAFETY
         try:
             answer = response.text
         except (ValueError, AttributeError):
-            # This catches cases where safety filters block text access
             print(f"Response blocked. Finish Reason: {response.candidates[0].finish_reason if response.candidates else 'Unknown'}")
             await interaction.followup.send(embed=create_error_embed("The model refused to answer (Safety/Invalid response)."), ephemeral=True)
             return None
             
         print(f"Gemini Response (length {len(answer)}): '{answer[:100]}...'")
         
-        # Safe title truncation ensuring < 256 chars
         title_text = f"Prompt: {prompt}"
         if len(title_text) > 256:
             truncated_prompt = title_text[:253] + "..."
         else:
             truncated_prompt = title_text
 
-        await api_tracker.increment()
-        current_api_count = api_tracker.get_count()
+        current_api_count = await api_tracker.increment()
         embed_color = discord.Color.blue()
         sent_messages = []
         model_display_name = next((name for name, value in MODELS.items() if value == model_name), model_name)
@@ -248,7 +231,6 @@ async def process_gemini_request(interaction: discord.Interaction, prompt: str, 
         try: 
             await interaction.followup.send(embed=create_error_embed("Sorry, I encountered a critical unexpected error."), ephemeral=True)
         except discord.errors.NotFound: 
-            # If interaction is invalid (e.g. timed out), try sending to channel
             if interaction.channel:
                 await interaction.channel.send(f"{interaction.user.mention}", embed=create_error_embed("Sorry, I encountered a critical unexpected error."))
         return None
@@ -270,16 +252,15 @@ class FollowupModal(discord.ui.Modal, title='Ask a Follow-up Question'):
 class ReplyView(discord.ui.View):
     def __init__(self, original_prompt: str, original_answer: str, model_name: str, system_prompt: Optional[str], personality_name: str, timeout: float = 300):
         super().__init__(timeout=timeout)
-        self.original_prompt = original_prompt # Store original user prompt
+        self.original_prompt = original_prompt 
         self.original_answer = original_answer
         self.model_name = model_name
         self.system_prompt = system_prompt
         self.personality_name = personality_name
-        self.message: Optional[discord.Message] = None # Store reference to message
+        self.message: Optional[discord.Message] = None 
 
-    @discord.ui.button(label='Reply', style=discord.ButtonStyle.primary, emoji='↪️')
+    @discord.ui.button(label='Reply', style=discord.ButtonStyle.primary)
     async def reply_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Pass BOTH prompt and answer for full context
         full_context = f"User asked: {self.original_prompt}\nAI Answered: {self.original_answer}"
         await interaction.response.send_modal(FollowupModal(full_context, self.model_name, self.system_prompt, self.personality_name))
 
@@ -293,15 +274,15 @@ class ReplyView(discord.ui.View):
                 pass
 
 # --- Slash Command Definitions ---
-model_choices = [app_commands.Choice(name=name, value=value) for name, value in MODELS.items()]
-personality_choices = [app_commands.Choice(name=name, value=name) for name in SYSTEM_PROMPTS.keys()]
+model_choices = [app_commands.Choice(name=name, value=value) for name, value in list(MODELS.items())[:25]]
+personality_choices = [app_commands.Choice(name=name, value=name) for name in list(SYSTEM_PROMPTS.keys())[:25]]
 
 @client.tree.command(name="ask_gemini", description="Ask Gemini a question!")
 @app_commands.describe(prompt="The question you want to ask", personality=f"The personality for the AI (default: {DEFAULT_PERSONALITY})", model=f"The AI model to use (default: {DEFAULT_MODEL})", context="Optional: Relevant text/context from a previous message to include")
 @app_commands.choices(model=model_choices, personality=personality_choices)
-async def ask_gemini(interaction: discord.Interaction, prompt: str, personality: str = None, model: str = None, context: Optional[str] = None):
+async def ask_gemini(interaction: discord.Interaction, prompt: str, personality: Optional[str] = None, model: Optional[str] = None, context: Optional[str] = None):
     await interaction.response.defer(thinking=True, ephemeral=False)
-    chosen_model_name = model if model else MODELS.get(DEFAULT_MODEL, "gemini-3-flash-preview") # Fallback safety
+    chosen_model_name = model if model else MODELS.get(DEFAULT_MODEL, "gemini-3-flash-preview")
     
     if not SYSTEM_PROMPTS:
          await interaction.followup.send(embed=create_error_embed("Error: No personalities configured or loaded. Cannot process request."), ephemeral=True)
@@ -313,9 +294,8 @@ async def ask_gemini(interaction: discord.Interaction, prompt: str, personality:
     if result:
         answer_text, last_message = result
         if last_message:
-            # Pass 'prompt' here so we can preserve context
             reply_view = ReplyView(original_prompt=prompt, original_answer=answer_text, model_name=chosen_model_name, system_prompt=chosen_system_prompt, personality_name=chosen_personality_name)
-            reply_view.message = last_message # Assign the message so timeout works
+            reply_view.message = last_message 
             await last_message.edit(view=reply_view)
 
 # --- Bot Event Handlers ---
