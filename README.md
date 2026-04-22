@@ -23,7 +23,7 @@ TESTING_GUILD_ID=[your_guild_id]
 ### Commands
 | Command | Description |
 | :--- | :--- |
-| `/ask_gemini` | Ask Gemini a question and receive a reply. Supports optional 'personality,' 'model,' and 'context,' parameters. |
+| `/ask_gemini` | Ask Gemini a question and receive a reply. Supports optional 'personality,' 'model,' and 'context' parameters |
 
 ### API Usage Tracking
 John Robot automatically tracks daily Gemini API usage with a data.json file
